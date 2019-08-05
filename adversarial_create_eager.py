@@ -20,8 +20,12 @@ from __future__ import print_function
 
 import numpy as np
 import tensorflow as tf
-import foolbox
+tf.enable_eager_execution()
+import foolbox_base.foolbox as fb_0
+import foolbox_2.foolbox as fb_2
 import i3d
+# import skvideo
+import pre_process_rgb_flow as img_tool
 
 _IMAGE_SIZE = 224
 
@@ -44,7 +48,7 @@ _LABEL_MAP_PATH_600 = 'data/label_map_600.txt'
 
 FLAGS = tf.flags.FLAGS
 
-tf.flags.DEFINE_string('eval_type', 'flow', 'rgb, rgb600, flow, or joint')
+tf.flags.DEFINE_string('eval_type', 'rgb', 'rgb, rgb600, flow, or joint')
 tf.flags.DEFINE_boolean('imagenet_pretrained', True, '')
 
 
@@ -68,16 +72,35 @@ def main(unused_argv):
 
   if eval_type in ['rgb', 'rgb600', 'joint']:
     # RGB input has 3 channels.
-    rgb_input = tf.placeholder(
-        tf.float32,
-        shape=(1, _SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 3))
+    # rgb_input = tf.placeholder(
+    #     tf.float32,
+    #     shape=(1, _SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 3))
 
+    rgb_input = tf.keras.Input(shape=[_SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 3],batch_size=1, dtype=tf.float32)
+    # eps_rgb = tf.Variable(tf.zeros(shape=[1, 1, _IMAGE_SIZE, _IMAGE_SIZE, 3], dtype=tf.float32))
+    # mask = tf.ones_like(rgb_input)
+    #
+    # ind_start = 0
+    # ind_end = _SAMPLE_VIDEO_FRAMES # _SAMPLE_VIDEO_FRAMES
+    # indices = np.linspace(ind_start,ind_end,ind_end+1)
+    # mask_indecator = tf.one_hot(indices =indices, depth=_SAMPLE_VIDEO_FRAMES)
+    # mask_indecator = tf.reduce_sum(mask_indecator, reduction_indices=0)
+    # mask_indecator = tf.reshape(mask_indecator, [1,_SAMPLE_VIDEO_FRAMES,1,1,1])
+    # mask_rgb = mask*mask_indecator
+    # mask = tf.ones_like(eps_rgb)
+    # paddings = tf.constant([[0, 0, ], [39, 39], [0, 0], [0, 0], [0, 0]])
+    # mask = tf.pad(mask, paddings)
 
+    # rgb_input_ =tf.Variable(rgb_input)
+    # rgb_input_ = tf.assign(rgb_input_[0, 40, ...], rgb_input_[0, 40, ...] + eps_rgb)
+    # tf.assign(rgb_input[0, 40, ...], rgb_input[0, 40, ...]+eps_rgb)
+    # rgb_input[1,40,...] += eps_rgb
     with tf.variable_scope('RGB'):
       rgb_model = i3d.InceptionI3d(
           NUM_CLASSES, spatial_squeeze=True, final_endpoint='Logits')
+      adversarial_inputs_rgb = rgb_input #+ mask_rgb*eps_rgb
       rgb_logits, _ = rgb_model(
-          rgb_input, is_training=False, dropout_keep_prob=1.0)
+        adversarial_inputs_rgb, is_training=False, dropout_keep_prob=1.0)
 
 
     rgb_variable_map = {}
@@ -91,16 +114,38 @@ def main(unused_argv):
 
     rgb_saver = tf.train.Saver(var_list=rgb_variable_map, reshape=True)
 
+  # eps = tf.placeholder(
+  #       tf.float32,
+  #       shape=(1, 1, _IMAGE_SIZE, _IMAGE_SIZE, 2))
+
+  # eps = tf.constant(np.zeros(shape=[1, 1, _IMAGE_SIZE, _IMAGE_SIZE, 2]),dtype=tf.float32)
+  # eps = tf.Variable(tf.zeros(shape=[1, 1, _IMAGE_SIZE, _IMAGE_SIZE, 2],dtype=tf.float32))
+
   if eval_type in ['flow', 'joint']:
     # Flow input has only 2 channels.
     flow_input = tf.placeholder(
         tf.float32,
         shape=(1, _SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 2))
+
+    eps_flow= tf.Variable(tf.zeros(shape=[1, 1, _IMAGE_SIZE, _IMAGE_SIZE, 2], dtype=tf.float32))
+    mask = tf.ones_like(flow_input)
+    # paddings = tf.constant([[0, 0, ], [39, 39], [0, 0], [0, 0], [0, 0]])
+    # mask = tf.pad(mask, paddings)
+    indices = np.linspace(0,_SAMPLE_VIDEO_FRAMES,_SAMPLE_VIDEO_FRAMES+1)
+    mask_indecator = tf.one_hot(indices =indices, depth=_SAMPLE_VIDEO_FRAMES)
+    mask_indecator = tf.reduce_sum(mask_indecator, reduction_indices=0)
+    mask_indecator = tf.reshape(mask_indecator, [1,_SAMPLE_VIDEO_FRAMES,1,1,1])
+    mask_flow = mask*mask_indecator
+
+
     with tf.variable_scope('Flow'):
       flow_model = i3d.InceptionI3d(
           NUM_CLASSES, spatial_squeeze=True, final_endpoint='Logits')
+
+      adversarial_inputs_flow = flow_input + mask_flow* eps_flow
+
       flow_logits, _ = flow_model(
-          flow_input, is_training=False, dropout_keep_prob=1.0)
+        adversarial_inputs_flow, is_training=False, dropout_keep_prob=1.0)
     flow_variable_map = {}
     for variable in tf.global_variables():
       if variable.name.split('/')[0] == 'Flow':
@@ -127,6 +172,22 @@ def main(unused_argv):
       tf.logging.info('RGB data loaded, shape=%s', str(rgb_sample.shape))
       feed_dict[rgb_input] = rgb_sample
 
+      sess.run(eps_rgb.initializer)
+      rgb_adv_model = fb_2.models.TensorFlowModel(inputs=rgb_input,
+                                                  adversarial_inputs=adversarial_inputs_rgb,
+                                                  perturbation= eps_rgb,
+                                                  mask = mask_rgb,
+                                                  logits=rgb_logits,
+                                                  bounds=(-1, 1))
+      # criteria = fb_2.criteria.ConfidentMisclassification(p=0.9)
+      criteria = fb_2.criteria.Misclassification()
+      # attack = fb_2.attacks.FGSM(model=rgb_adv_model, criterion=criteria)
+      attack = fb_2.attacks.MultiStepGradientBaseAttack(model=rgb_adv_model, criterion=criteria)
+
+
+      rgb_adversarial = attack(rgb_sample.squeeze(), 227,unpack=False)
+      # adv_image = rgb_adv_model.session.run(rgb_adv_model._pert)
+
     if eval_type in ['flow', 'joint']:
       if imagenet_pretrained:
         flow_saver.restore(sess, _CHECKPOINT_PATHS['flow_imagenet'])
@@ -135,7 +196,24 @@ def main(unused_argv):
       tf.logging.info('Flow checkpoint restored')
       flow_sample = np.load(_SAMPLE_PATHS['flow'])
       tf.logging.info('Flow data loaded, shape=%s', str(flow_sample.shape))
+
+      # eps = tf.Variable(tf.zeros(shape = [1,224,224,2]))
+      # flow_input = flow_input + eps
+
       feed_dict[flow_input] = flow_sample
+      # feed_dict[eps] = np.zeros(shape = [1, _SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 2])
+
+      sess.run(eps_flow.initializer)
+      flow_adv_model = fb_2.models.TensorFlowModel(inputs=flow_input,
+                                                   adversarial_inputs=adversarial_inputs_flow,
+                                                   perturbation=eps_flow,
+                                                   mask = mask_flow,
+                                                   logits=flow_logits,
+                                                   bounds=(-1, 1))
+      criteria = fb_2.criteria.ConfidentMisclassification(p=0.9)
+      attack = fb_2.attacks.FGSM(model=flow_adv_model,criterion=criteria)
+      flow_adversarial =  attack(flow_sample.squeeze(), 227, unpack=False)
+      # adv_image = flow_adv_model.session.run(flow_adv_model._dx)
 
     out_logits, out_predictions = sess.run(
         [model_logits, model_predictions],
