@@ -13,14 +13,21 @@
 # limitations under the License.
 # ============================================================================
 """Loads a sample video and classifies using a trained Kinetics checkpoint."""
-
+#%%
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import sys
+import os
 import numpy as np
+import matplotlib.pyplot as plt
 import tensorflow as tf
 # tf.enable_eager_execution()
+sys.path.insert(1, '/media/ROIPO/Data/projects/Adversarial/kinetics-i3d/')
+
+sys.path.insert(1, os.path.realpath(os.path.pardir))
+
 import foolbox_base.foolbox as fb_0
 import foolbox_2.foolbox as fb_2
 import i3d
@@ -28,8 +35,13 @@ import i3d
 import pre_process_rgb_flow as img_tool
 
 _IMAGE_SIZE = 224
+_BATCH_SIZE = 5
 
-_SAMPLE_VIDEO_FRAMES = 79
+_SAMPLE_VIDEO_FRAMES = 90 #250 #90 #79
+_BASE_PATCH_FRAMES = 1 # _SAMPLE_VIDEO_FRAMES # 1
+ind_start = 0  # 0 #50
+ind_end = _SAMPLE_VIDEO_FRAMES
+
 _SAMPLE_PATHS = {
     'rgb': 'data/v_CricketShot_g04_c01_rgb.npy',
     'flow': 'data/v_CricketShot_g04_c01_flow.npy',
@@ -53,6 +65,16 @@ FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_string('eval_type', 'rgb', 'rgb, rgb600, ,  flow, or joint')
 tf.flags.DEFINE_boolean('imagenet_pretrained', True, '')
 
+test_list_path  = '/media/ROIPO/Data/projects/Adversarial/database/UCF-101/ucfTrainTestlist/testlist01.txt'
+
+def get_video_sample(vid_list, random=True, id=0 ):
+      base_path = '/media/ROIPO/Data/projects/Adversarial/database/UCF-101/video/'
+
+      if random:
+        id = np.random.choice(a=vid_list.__len__(), size=1)[0]
+      cls, vid_name = vid_list[id].split('/')
+      frames, flow_frames = img_tool.video_to_image_and_of(video_path=base_path+vid_name,n_steps=80)
+      return frames, flow_frames, cls
 
 def main(unused_argv):
   tf.logging.set_verbosity(tf.logging.INFO)
@@ -73,6 +95,12 @@ def main(unused_argv):
   else:
     kinetics_classes = [x.strip() for x in open(_LABEL_MAP_PATH)]
 
+    ucf_video_list = [x.strip() for x in open(test_list_path)]
+
+    rgb_sample = np.load('/media/ROIPO/Data/projects/Adversarial/kinetics-i3d/data/triple_jump_1_kinetics.npy')
+    correct_cls = 'triple jump'
+    # rgb_sample, flow_sample, correct_cls = get_video_sample(ucf_video_list)
+
     default_adv_flag = tf.constant(1.0,dtype=tf.float32)
     adv_flag = tf.placeholder_with_default(default_adv_flag,
       shape=default_adv_flag.shape)
@@ -82,20 +110,21 @@ def main(unused_argv):
     # RGB input has 3 channels.
     rgb_input = tf.placeholder(
         tf.float32,
-        shape=(1, _SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 3))
+        shape=(None, _SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 3))
 
-    eps_rgb = tf.Variable(tf.zeros(shape=[1, 1, _IMAGE_SIZE, _IMAGE_SIZE, 3], dtype=tf.float32))
-    mask = tf.ones_like(rgb_input)
+    eps_rgb = tf.Variable(tf.zeros(shape=[_BASE_PATCH_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 3], dtype=tf.float32))
+    # eps_rgb = tf.Variable(tf.zeros(shape=[_SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 3], dtype=tf.float32))
+
+    mask = tf.ones(shape=[_SAMPLE_VIDEO_FRAMES, _IMAGE_SIZE, _IMAGE_SIZE, 3])
     # mask = np.zeros(rgb_input.shape, dtype=np.float32)
     # mask[0,:,112,112,:]=1
     # mask = tf.constant(mask)
 
-    ind_start = 0 #50
-    ind_end = 0 #_SAMPLE_VIDEO_FRAMES# 50 #_SAMPLE_VIDEO_FRAMES # _SAMPLE_VIDEO_FRAMES
+ #_SAMPLE_VIDEO_FRAMES# 50 #_SAMPLE_VIDEO_FRAMES # _SAMPLE_VIDEO_FRAMES
     indices = np.linspace(ind_start,ind_end,ind_end-ind_start+1)
     mask_indecator = tf.one_hot(indices =indices, depth=_SAMPLE_VIDEO_FRAMES)
     mask_indecator = tf.reduce_sum(mask_indecator, reduction_indices=0)
-    mask_indecator = tf.reshape(mask_indecator, [1,_SAMPLE_VIDEO_FRAMES,1,1,1])
+    mask_indecator = tf.reshape(mask_indecator, [_SAMPLE_VIDEO_FRAMES,1,1,1])
     mask_rgb = mask*mask_indecator
     # mask = tf.ones_like(eps_rgb)
     # paddings = tf.constant([[0, 0, ], [39, 39], [0, 0], [0, 0], [0, 0]])
@@ -109,6 +138,8 @@ def main(unused_argv):
       rgb_model = i3d.InceptionI3d(
           NUM_CLASSES, spatial_squeeze=True, final_endpoint='Logits')
       adversarial_inputs_rgb = tf.nn.tanh(rgb_input + adv_flag*(mask_rgb*eps_rgb))
+      # adversarial_inputs_rgb = tf.nn.tanh(rgb_input + adv_flag*eps_rgb)
+
       rgb_logits, _ = rgb_model(
         adversarial_inputs_rgb, is_training=False, dropout_keep_prob=1.0)
 
@@ -178,7 +209,7 @@ def main(unused_argv):
       else:
         rgb_saver.restore(sess, _CHECKPOINT_PATHS[eval_type])
       tf.logging.info('RGB checkpoint restored')
-      rgb_sample = np.load(_SAMPLE_PATHS['rgb'])
+      #rgb_sample = np.load(_SAMPLE_PATHS['rgb'])
       tf.logging.info('RGB data loaded, shape=%s', str(rgb_sample.shape))
       feed_dict[rgb_input] = rgb_sample
 
@@ -189,16 +220,28 @@ def main(unused_argv):
                                                   mask = mask_rgb,
                                                   logits=rgb_logits,
                                                   bounds=(-1, 1))
-      # criteria = fb_2.criteria.ConfidentMisclassification(p=0.9)
-      criteria = fb_2.criteria.Misclassification()
-      # attack = fb_2.attacks.FGSM(model=rgb_adv_model, criterion=criteria)
+      if 1:
+          
+          # target_class = kinetics_classes.index(correct_cls)
+          # criteria = fb_2.criteria.Misclassification()
 
-      attack = fb_2.attacks.MultiStepGradientBaseAttack(model=rgb_adv_model, criterion=criteria)
-
-
-      rgb_adversarial = attack(rgb_sample.squeeze(), 227,unpack=False)
-      # adv_image = rgb_adv_model.session.run(rgb_adv_model._pert)
-
+          target_class = kinetics_classes.index('javelin throw')
+          # criteria = fb_2.criteria.TargetClass(target_class=target_class)
+          criteria = fb_2.criteria.TargetClassProbability(target_class=target_class,p=0.85)
+          #
+          # target_class = kinetics_classes.index(correct_cls)
+          #
+          # # target_class =30
+          # # criteria = fb_2.criteria.TargetClass(target_class=target_class)
+          #
+          # # attack = fb_2.attacks.FGSM(model=rgb_adv_model, criterion=criteria)
+          #
+          attack = fb_2.attacks.MultiStepGradientBaseAttack(model=rgb_adv_model, criterion=criteria)
+          #
+          #
+          rgb_adversarial = attack(rgb_sample.squeeze(), label=target_class,unpack=False)
+          # adv_image = rgb_adv_model.session.run(rgb_adv_model._pert)
+#%%
     if eval_type in ['flow', 'joint']:
       if imagenet_pretrained:
         flow_saver.restore(sess, _CHECKPOINT_PATHS['flow_imagenet'])
@@ -225,6 +268,90 @@ def main(unused_argv):
       attack = fb_2.attacks.FGSM(model=flow_adv_model,criterion=criteria)
       flow_adversarial =  attack(flow_sample.squeeze(), 227, unpack=False)
       # adv_image = flow_adv_model.session.run(flow_adv_model._dx)
+    #
+    # label_coeff = -1.0
+    #     else:
+    #     label_coeff =  1.0
+    #
+    #     x = a.unperturbed
+    #     min_, max_ = a.bounds()
+    if 0:
+      train_tf_record_list=['/media/ROIPO/Data/projects/Adversarial/kinetics-i3d/data/testlist01_HighJump.tfrecords',
+                            '/media/ROIPO/Data/projects/Adversarial/kinetics-i3d/data/testlist02_HighJump.tfrecords']
+      trainset = tf.data.TFRecordDataset(filenames=train_tf_record_list, num_parallel_reads=train_tf_record_list.__len__())
+      trainset = trainset.shuffle(1000)
+      trainset = trainset.repeat(50)
+
+      trainset = trainset.map(map_func=img_tool.parse_example, num_parallel_calls=10)
+      trainset = trainset.batch(batch_size=_BATCH_SIZE,drop_remainder=True).prefetch(_BATCH_SIZE)
+
+      global_step = tf.train.get_or_create_global_step()
+
+
+      trainset_itr = trainset.make_one_shot_iterator().get_next()
+
+      optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
+      #
+      grad = optimizer.compute_gradients(loss= rgb_adv_model._loss, var_list=rgb_adv_model._pert)
+      #     # self._optimizer = tf.train.AdamOptimizer()
+      #     # train_op = self._optimizer.apply_gradients(zip([grad[0][0]], [a._model._pert]))
+      train_op = optimizer.apply_gradients(grads_and_vars=grad,global_step=global_step)
+
+
+      rgb_adv_model.session.run(tf.variables_initializer(var_list=[global_step]))
+      rgb_adv_model.session.run(tf.variables_initializer(var_list=optimizer.variables()))
+
+
+      tf.summary.scalar('train/total_loss', rgb_adv_model._loss)
+
+      pertubation = rgb_adv_model._pert - tf.reduce_min(rgb_adv_model._pert)
+      pertubation = pertubation / tf.reduce_max(pertubation)
+      pertubation = pertubation*255.
+
+
+      tf.summary.image('train/pertubation', pertubation)
+      logdir = '/media/ROIPO/Data/projects/Adversarial/kinetics-i3d/log/train/'
+
+      summary_writer_train = tf.summary.FileWriter(logdir + "/0005", graph=sess.graph)
+      summary_merge = tf.summary.merge_all()
+
+      mini_batch = 10
+      while True:
+          sample = sess.run(trainset_itr)
+          # to repeat with decreased epsilons if necessary
+          # gradient = self._gradient(a,x)
+          pert = rgb_adv_model.session.run(rgb_adv_model._pert)
+          x = sample[0]
+          label = sample[1]
+
+          label_coeff = -1.0
+          # adv = a._model.session.run(a._model._adversarial, feed_dict={a._model._inputs: x[np.newaxis]})
+          # adv = x
+          mask  = rgb_adv_model.session.run(rgb_adv_model._mask)
+
+          for _ in range(mini_batch):
+              _, gradient, _loss, _summary_merge, _global_step =rgb_adv_model.session.run(
+                  fetches=[train_op,grad, rgb_adv_model._loss,summary_merge, global_step],
+                                                                          feed_dict={rgb_adv_model._inputs: x,
+                                                                          rgb_adv_model._labels: label,
+                                                                          rgb_adv_model._labels_coeff: label_coeff})
+
+              summary_writer_train.add_summary(summary=_summary_merge,global_step=_global_step)
+              stop_flag = (rgb_adv_model.session.run(rgb_adv_model._logits, feed_dict={rgb_adv_model._inputs: x}).argmax(
+                  axis=1) != label).all()
+              if stop_flag:
+                  a=1
+              _reg_loss = rgb_adv_model.session.run(
+                  fetches=[rgb_adv_model._regularizer],
+                  feed_dict={rgb_adv_model._inputs: x,
+                            rgb_adv_model._labels: label,
+                            rgb_adv_model._labels_coeff: label_coeff})
+              print(_reg_loss[0])
+          # _, loss = rgb_adv_model.session.run(fetches=[train_op, rgb_adv_model._loss], feed_dict={rgb_adv_model._inputs: x,
+          #                                                                                                  rgb_adv_model._labels: [label],
+          #                                                                                                 rgb_adv_model._labels_coeff: label_coeff})
+          # # pert = a._model.session.run(a._model._pert)
+
 
     out_logits, out_predictions = sess.run(
         [model_logits, model_predictions],
@@ -240,5 +367,27 @@ def main(unused_argv):
       print(out_predictions[index], out_logits[index], kinetics_classes[index])
 
 
+    feed_dict[adv_flag]=0.0
+    out_logits, out_predictions = sess.run(
+        [model_logits, model_predictions],
+        feed_dict=feed_dict)
+
+    out_logits = out_logits[0]
+    out_predictions = out_predictions[0]
+    sorted_indices = np.argsort(out_predictions)[::-1]
+
+    print('Norm of logits: %f' % np.linalg.norm(out_logits))
+    print('\nTop classes and probabilities')
+    for index in sorted_indices[:20]:
+      print(out_predictions[index], out_logits[index], kinetics_classes[index])
+
+    a=1
+
+
+
+
 if __name__ == '__main__':
   tf.app.run(main)
+
+
+#%%

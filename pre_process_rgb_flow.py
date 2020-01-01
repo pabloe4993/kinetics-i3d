@@ -2,6 +2,25 @@ import cv2
 import numpy as np
 import imageio
 import tensorflow as tf
+import os
+import sys
+import random
+
+
+
+def run_npy(vid_npy):
+    vid = vid_npy.squeeze()
+    num_frames= vid.shape[0]
+    idx=0
+    while True:
+        frame =cv2.cvtColor(((vid[idx,...]+1.0)*127.5).astype(np.uint8),cv2.COLOR_RGB2BGR)
+        cv2.imshow('video_npy', frame,)
+        c = cv2.waitKey(40) & 0xFF
+        if c == 27 or c == ord('q'):
+            break
+        idx = (idx + 1) % num_frames
+    cv2.destroyAllWindows()
+
 
 def image_resize(image, width = None, height = None, inter = cv2.INTER_LINEAR):
     # initialize the dimensions of the image to be resized and
@@ -11,22 +30,26 @@ def image_resize(image, width = None, height = None, inter = cv2.INTER_LINEAR):
 
     # if both the width and height are None, then return the
     # original image
-    if width is None and height is None:
-        return image
 
-    # check to see if the width is None
-    if width is None:
-        # calculate the ratio of the height and construct the
-        # dimensions
-        r = height / float(h)
-        dim = (int(w * r), height)
+    r = max(float(width) / w, float(height) / h)
+    dim = (int(w * r), int(h * r))
 
-    # otherwise, the height is None
-    else:
-        # calculate the ratio of the width and construct the
-        # dimensions
-        r = width / float(w)
-        dim = (width, int(h * r))
+    # if width is None and height is None:
+    #     return image
+    #
+    # # check to see if the width is None
+    # if width is None:
+    #     # calculate the ratio of the height and construct the
+    #     # dimensions
+    #     r = height / float(h)
+    #     dim = (int(w * r), height)
+    #
+    # # otherwise, the height is None
+    # else:
+    #     # calculate the ratio of the width and construct the
+    #     # dimensions
+    #     r = width / float(w)
+    #     dim = (width, int(h * r))
 
     # resize the image
     resized = cv2.resize(image, dim, interpolation = inter)
@@ -65,13 +88,13 @@ def video_to_image_and_of(video_path, target_fps=25, resize_height=256, crop_siz
     frame_num = 1
 
     ret, frame1 = capture.read()
-    resized_frame1 = image_resize(frame1, height = resize_height)
+    resized_frame1 = image_resize(frame1, height = resize_height,width=resize_height)
     prvs = cv2.cvtColor(resized_frame1,cv2.COLOR_BGR2GRAY)
     hsv = np.zeros_like(frame1)
     hsv[...,1] = 255
 
     # extract features
-    while (capture.isOpened()) & (int(round(frame_num / frame_gap)) < n_steps) & (bit == 0):
+    while (capture.isOpened()) & (bit == 0):
         flag, frame = capture.read()
         if flag == 0:
             bit = 1
@@ -87,7 +110,7 @@ def video_to_image_and_of(video_path, target_fps=25, resize_height=256, crop_siz
         if frame_num % frame_gap == 0:
             # RGB
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            resized_frame = image_resize(image, height = resize_height)
+            resized_frame = image_resize(image,width=resize_height, height = resize_height)
             res = resized_frame.astype('float32') / 128. - 1
             res = crop_center_image(res, crop_size)
             clip_frames.append(res)
@@ -132,10 +155,21 @@ def video_to_image_and_of(video_path, target_fps=25, resize_height=256, crop_siz
 
     capture.release()
 
-    frames = np.array(clip_frames)
-    frames_flow = np.array(clip_frames_flow)
-    frames = np.expand_dims(frames, axis=0)
-    frames_flow = np.expand_dims(frames_flow, axis=0)
+
+     # (int(round(frame_num / frame_gap)) < n_steps)
+    if frame_num>=n_steps:
+        frames = np.array(clip_frames)[-n_steps:]
+        frames_flow = np.array(clip_frames_flow)
+        frames = np.expand_dims(frames, axis=0)
+        frames_flow = np.expand_dims(frames_flow, axis=0)
+    else:
+        frames = np.array(clip_frames)
+        frames_flow = np.array(clip_frames_flow)
+        frames = np.expand_dims(frames, axis=0)
+        frames_flow = np.expand_dims(frames_flow, axis=0)
+
+
+
     return frames, frames_flow
 
 
@@ -166,16 +200,45 @@ def parse_example(serialized):
 
     return video, label
 
+
+def random_videos(videos_folder,n_steps, num_of_vid,dest_folder):
+
+    sub_folders = os.listdir(videos_folder)
+    random.shuffle(sub_folders)
+    sub_folders = sub_folders[:num_of_vid]
+
+    for cls in sub_folders:
+        cls_folders = os.path.join(videos_folder,cls)
+        cls_videos_list = os.listdir(cls_folders)
+        random.shuffle(cls_videos_list)
+        vid_name = cls_videos_list[0]
+        full_vid_path = os.path.join(cls_folders,vid_name)
+        rgb, of, = video_to_image_and_of(full_vid_path, n_steps=n_steps)
+        dest_video_name = os.path.join(dest_folder,"rgb_{}@{}.npy".format(vid_name.split('.')[0],cls))
+        np.save(dest_video_name,rgb)
+
+
 def main(unused_argv):
+
+    random_videos('/data/DL/Adversarial/kinetics-downloader/dataset/valid/',
+                  n_steps=90,
+                  num_of_vid=40,
+                  dest_folder='/data/DL/Adversarial/kinetics-i3d/data/videos_for_tests/npy/')
+
+def main1(unused_argv):
+
+
+    f, of, = video_to_image_and_of('/data/DL/Adversarial/kinetics-downloader/dataset/train/juggling_balls/7pxmupXYnuo.mp4',n_steps=90)
+
     video_base_path = '/media/ROIPO/Data/projects/Adversarial/database/UCF-101/video/'
     video_list_path = ['/media/ROIPO/Data/projects/Adversarial/database/UCF-101/ucfTrainTestlist/testlist01.txt',
                        '/media/ROIPO/Data/projects/Adversarial/database/UCF-101/ucfTrainTestlist/testlist02.txt',
                        '/media/ROIPO/Data/projects/Adversarial/database/UCF-101/ucfTrainTestlist/testlist03.txt']
     label_map_path='/media/ROIPO/Data/projects/Adversarial/kinetics-i3d/data/label_map_ucf_101.txt'
 
-    class_target = ['SkyDiving']
+    class_target = ['triple jump']
 
-    n_frames = 80
+    n_frames = 90
 
     ucf_classes = [x.strip() for x in open(label_map_path)]
 

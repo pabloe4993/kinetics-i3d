@@ -20,10 +20,10 @@ from __future__ import print_function
 
 import numpy as np
 import tensorflow as tf
-tf.enable_eager_execution()
+# tf.enable_eager_execution()
 import foolbox_base.foolbox as fb_0
 import foolbox_2.foolbox as fb_2
-import i3d
+import i3d_tf2 as i3d
 # import skvideo
 import pre_process_rgb_flow as img_tool
 
@@ -46,14 +46,14 @@ _CHECKPOINT_PATHS = {
 _LABEL_MAP_PATH = 'data/label_map.txt'
 _LABEL_MAP_PATH_600 = 'data/label_map_600.txt'
 
-FLAGS = tf.flags.FLAGS
+FLAGS = tf.compat.v1.flags.FLAGS
 
-tf.flags.DEFINE_string('eval_type', 'rgb', 'rgb, rgb600, flow, or joint')
-tf.flags.DEFINE_boolean('imagenet_pretrained', True, '')
+tf.compat.v1.flags.DEFINE_string('eval_type', 'rgb', 'rgb, rgb600, flow, or joint')
+tf.compat.v1.flags.DEFINE_boolean('imagenet_pretrained', True, '')
 
 
 def main(unused_argv):
-  tf.logging.set_verbosity(tf.logging.INFO)
+  tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
   eval_type = FLAGS.eval_type
 
   imagenet_pretrained = FLAGS.imagenet_pretrained
@@ -95,12 +95,12 @@ def main(unused_argv):
     # rgb_input_ = tf.assign(rgb_input_[0, 40, ...], rgb_input_[0, 40, ...] + eps_rgb)
     # tf.assign(rgb_input[0, 40, ...], rgb_input[0, 40, ...]+eps_rgb)
     # rgb_input[1,40,...] += eps_rgb
-    with tf.variable_scope('RGB'):
+    with tf.compat.v1.variable_scope('RGB'):
       rgb_model = i3d.InceptionI3d(
-          NUM_CLASSES, spatial_squeeze=True, final_endpoint='Logits')
+          NUM_CLASSES, spatial_squeeze=True, final_endpoint='Logits',dropout_keep_prob=1.0)
       adversarial_inputs_rgb = rgb_input #+ mask_rgb*eps_rgb
       rgb_logits, _ = rgb_model(
-        adversarial_inputs_rgb, is_training=False, dropout_keep_prob=1.0)
+        adversarial_inputs_rgb, is_training=False)
 
 
     rgb_variable_map = {}
@@ -230,4 +230,4 @@ def main(unused_argv):
 
 
 if __name__ == '__main__':
-  tf.app.run(main)
+  tf.compat.v1.app.run(main)

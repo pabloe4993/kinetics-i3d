@@ -130,7 +130,7 @@ class InceptionI3d(snt.AbstractModule):
       name: A string (optional). The name of this module.
 
     Raises:
-      ValueError: if `final_endpoint` is not recognized.
+      ValueError: if `final_endpoint` is not recognized
     """
 
     if final_endpoint not in self.VALID_ENDPOINTS:
